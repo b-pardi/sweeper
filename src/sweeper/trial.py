@@ -33,7 +33,9 @@ class Trial(Protocol):
         """Load a checkpoint from train_until or save, and set epoch from it.
 
         Also restores the global RNG states (sweeper.seeds.set_rng_states) and the DataLoader
-        generator state, so a resumed run draws what an unbroken one would.
+        generator state, so a resumed run draws what an unbroken one would. A latest_ckpt brings
+        back the segment's partial history too, a checkpoint from save starts the next segment
+        with an empty one.
 
         Args:
             ckpt: latest_ckpt of an interrupted attempt at this segment, or the previous rung's
@@ -43,12 +45,12 @@ class Trial(Protocol):
     def train_until(
         self, epoch: int, logger: RunLogger | None, latest_ckpt: Path
     ) -> dict[str, list[float]]:
-        """Train from self.epoch up to epoch, then return this call's metric history.
+        """Train from self.epoch up to epoch, then return the segment's history since its start.
 
-        Writes latest_ckpt itself, every so often and at the end of the segment, to a tmp file and
-        then os.replace. Logs only through logger.log and never calls logger.finish.
-        Called with epoch == self.epoch it trains nothing and returns an empty history. A latest
-        at the target with no stored score makes the sweeper retrain the whole segment.
+        The history is the partial one a restored latest_ckpt carried plus what this call trained,
+        so with epoch == self.epoch it trains nothing and returns the stored one. Writes
+        latest_ckpt with that history, every so often and at the end, to a tmp file then
+        os.replace. Logs only through logger.log and never calls logger.finish.
 
         Args:
             epoch: target epoch, self.epoch must equal it on return.
@@ -56,12 +58,14 @@ class Trial(Protocol):
             latest_ckpt: where the resume checkpoint goes.
 
         Returns:
-            key -> one value per epoch trained in this call. A key logged only on eval epochs has
-            fewer values.
+            key -> one value per epoch from the rung start up to epoch. A key logged only on eval
+            epochs has fewer values.
         """
 
     def save(self, ckpt: Path) -> None:
         """Write the full training state to ckpt, the sweeper renames it after.
+
+        ckpt carries no metric history, the segment's score is already committed.
 
         Args:
             ckpt: a tmp path next to the rung checkpoint.

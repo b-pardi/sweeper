@@ -68,6 +68,7 @@ def run_sweep(
         logger: one run per (config, repeat), None logs nothing.
         score: turns a segment's history into its stored score, None stores null.
         halving: successive halving settings, None runs every config to epochs.
+            Under halving the last config left still trains through every rung to epochs.
 
     Returns:
         The final state, as written to out_dir/sweep_state.json.
@@ -116,7 +117,6 @@ def run_sweep(
             ) from None
 
         state = _open_state(state_path, configs, head, targets, base_seed, resume)
-        # rung runs past the last target once an early stop ends the sweep
         for i in range(state['rung'], len(targets)):
             live = [c for c in configs if state['configs'][c.name]['pruned_at'] is None]
             for r in range(n_repeats):
@@ -128,9 +128,12 @@ def run_sweep(
 
             if halving is None or i == len(targets) - 1:
                 continue
-            _prune(state, state_path, i, halving, score.sense())
-            if state['rung'] == len(targets):
-                break
+            if len(live) > 1:
+                _prune(state, state_path, i, halving, score.sense())
+                continue
+            # the last one left has nothing to cut, it just trains on to epochs
+            state['rung'] = i + 1
+            write_json_atomic(state_path, state)
     return state
 
 
@@ -262,31 +265,17 @@ def _run_segment(
     try:
         trial.setup(cfg.params, entry['seed'], run_dir)
 
-        from_latest = latest.exists()
-        if from_latest:
+        # latest carries the segment's partial history, so a resume at t still scores from p
+        if latest.exists():
             trial.restore(latest)
             _check_epoch(trial.epoch, p, t, f'{where}: epoch after restoring {latest.name}')
-
-        # latest at the target with no score means the kill hit before the score write
-        # that history is gone and a zero epoch train_until can't score, so redo the segment
-        lost = score is not None and len(entry['scores']) <= i and trial.epoch == t
-        if from_latest and lost:
-            msg = f'{where}: {latest.name} at epoch {t} has no stored score, retraining from {p}'
-            warnings.warn(msg, RuntimeWarning, stacklevel=2)
-            trial.teardown()
-            latest.unlink()
-            seed_everything(entry['seed'])
-            trial = trial_factory()
-            trial.setup(cfg.params, entry['seed'], run_dir)
-            from_latest = False
-
-        if not from_latest and i > 0:
+        elif i > 0:
             prev = run_dir / f'rung{i - 1}.pth'
             if not prev.exists():
                 raise FileNotFoundError(f'{where}: no {latest.name} and no {prev} to resume from')
             trial.restore(prev)
             _check_epoch(trial.epoch, p, p, f'{where}: epoch after restoring {prev.name}')
-        elif not from_latest:
+        else:
             _check_epoch(trial.epoch, 0, 0, f'{where}: epoch after setup')
 
         if logger is not None:
@@ -353,10 +342,9 @@ def _prune(state: dict[str, Any], state_path: Path, i: int, halving: Halving, se
         state['configs'][name]['pruned_at'] = i
 
     # cuts and rung land in one write, so a resume between rungs never prunes twice or skips it
-    state['rung'] = i + 1 if len(kept) > 1 else len(state['targets'])
+    state['rung'] = i + 1
     write_json_atomic(state_path, state)
-    stop = ', one left so the sweep stops' if len(kept) == 1 else ''
-    _log.info(f'rung {i} prune kept {kept}, cut {cut}, of those by the IQR fence {fenced}{stop}')
+    _log.info(f'rung {i} prune kept {kept}, cut {cut}, of those by the IQR fence {fenced}')
 
 
 def _check_epoch(epoch: int, lo: int, hi: int, what: str) -> None:

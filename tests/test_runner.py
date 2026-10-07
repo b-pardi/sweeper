@@ -34,8 +34,8 @@ def _boom(*args) -> None:
 @pytest.mark.parametrize(
     'keys, direction, err, match, kept, scores',
     [
-        (('loss',), lambda k: 'min', None, None, 'a', {'a': 1.5, 'b': 4.5}),
-        (('loss',), lambda k: 'max', None, None, 'b', {'a': 2.5, 'b': 5.5}),
+        (('loss',), lambda k: 'min', None, None, 'a', {'a': [1.5, 1.5], 'b': [4.5]}),
+        (('loss',), lambda k: 'max', None, None, 'b', {'a': [2.5], 'b': [5.5, 5.5]}),
         (('nope',), {'loss': 'min'}.__getitem__, KeyError, 'nope', None, None),
         (('loss',), lambda k: True, ValueError, "'max', got True", None, None),
         (('loss', 'acc'), dict(loss='min', acc='max').get, ValueError, 'one dir', None, None),
@@ -58,9 +58,8 @@ def test_score_direction_comes_from_callable(
     cut = 'b' if kept == 'a' else 'a'
     assert state['configs'][kept]['pruned_at'] is None
     assert state['configs'][cut]['pruned_at'] == 0
-    assert {n: c['repeats'][0]['scores'] for n, c in state['configs'].items()} == {
-        n: [s] for n, s in scores.items()
-    }
+    # the survivor trains rung 1 on its own, the cut config keeps only its rung 0 score
+    assert {n: c['repeats'][0]['scores'] for n, c in state['configs'].items()} == scores
 
 
 # what a halving row expects unless it says otherwise, epochs 4 in 2 rungs, nothing cut
@@ -74,7 +73,6 @@ PLAIN = {
     'err': None,
     'targets': [2, 4],
     'pruned': {},  # config -> pruned_at, the rest are never cut
-    'stop': None,  # rung after which one config is left
     'fenced': [],
 }
 ABCDE = {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 100}
@@ -105,20 +103,25 @@ NAN_MID = {'a': 1, 'b': 2, 'c': NAN, 'd': 3, 'e': 4}  # 4 finite scores, so the 
             {'halving': Halving(2, 0.5), 'n_repeats': 2, 'pruned': {'c': 0}},
             id='n3-f0.5',
         ),
-        pytest.param({'a': 1}, {'halving': Halving(2, 0.5), 'stop': 0}, id='n1-f0.5'),
+        pytest.param({'a': 1}, {'halving': Halving(2, 0.5)}, id='n1-f0.5'),
+        pytest.param(
+            {'a': 1},
+            {'halving': Halving(2, 1.0), 'epochs': 5, 'targets': [2, 4, 5]},
+            id='n1-f1.0',
+        ),
         pytest.param(
             {'a': 1, 'b': 2, 'c': 3, 'd': 4},
-            {'halving': Halving(2, 0.1), 'pruned': {'b': 0, 'c': 0, 'd': 0}, 'stop': 0},
+            {'halving': Halving(2, 0.1), 'pruned': {'b': 0, 'c': 0, 'd': 0}},
             id='n4-f0.1',
         ),
         pytest.param(
             {'b': 1, 'a': 1},
-            {'halving': Halving(2, 0.5), 'pruned': {'b': 0}, 'stop': 0},
+            {'halving': Halving(2, 0.5), 'pruned': {'b': 0}},
             id='tie-min',
         ),
         pytest.param(
             {'b': 1, 'a': 1},
-            {'halving': Halving(2, 0.5), 'sense': 'max', 'pruned': {'b': 0}, 'stop': 0},
+            {'halving': Halving(2, 0.5), 'sense': 'max', 'pruned': {'b': 0}},
             id='tie-max',
         ),
         pytest.param({'a': 1}, {'score': False, 'err': 'needs a Score'}, id='no-score'),
@@ -173,7 +176,7 @@ NAN_MID = {'a': 1, 'b': 2, 'c': NAN, 'd': 3, 'e': 4}  # 4 finite scores, so the 
 def test_halving_is_opt_in_only(
     tmp_path: Path, fake_trial, monkeypatch, caplog, scores: dict, case: dict
 ) -> None:
-    """Halving runs only when asked, cuts by rank after the IQR fence, and stops at one left."""
+    """Halving is opt-in, cuts by rank after the IQR fence, and survivors train to epochs."""
     c = {**PLAIN, **case}
     if c['min_prune'] is not None:
         monkeypatch.setattr(halving, 'MIN_PRUNE_CONFIGS', c['min_prune'])
@@ -197,12 +200,11 @@ def test_halving_is_opt_in_only(
     ]
     targets = c['targets']
     assert state['targets'] == targets
-    assert state['rung'] == (len(targets) - 1 if c['stop'] is None else len(targets))
+    assert state['rung'] == len(targets) - 1
     for name in scores:
         pruned_at = c['pruned'].get(name)
         assert state['configs'][name]['pruned_at'] == pruned_at
-        last = len(targets) - 1 if c['stop'] is None else c['stop']
-        last = last if pruned_at is None else pruned_at
+        last = len(targets) - 1 if pruned_at is None else pruned_at
         for r in range(c['n_repeats']):
             run_dir = out / name / f'repeat{r}'
             assert sorted(p.name for p in run_dir.glob('rung*.pth')) == [
@@ -212,11 +214,12 @@ def test_halving_is_opt_in_only(
             assert len(state['configs'][name]['repeats'][r]['scores']) == last + 1
 
     prunes = [rec.getMessage() for rec in caplog.records if 'prune' in rec.getMessage()]
-    assert len(prunes) == (len(targets) - 1 if c['stop'] is None else c['stop'] + 1)
+    # a lone config has nothing to prune, so it logs no prune line
+    assert len(prunes) == (len(targets) - 1 if len(scores) > 1 else 0)
     if prunes:
         assert f'IQR fence {c["fenced"]}' in prunes[0]
 
-    # a finished sweep, early stop included, does nothing on resume
+    # a finished sweep does nothing on resume
     fake_trial.calls.clear()
     again = run_sweep(configs, fake_trial, out, score=score, resume=True, **args)
     # through JSON, since NaN != NaN would fail a plain dict compare
@@ -353,7 +356,8 @@ FULL = [SETUP, ('train_until', 0, 3), SAVE, DOWN]
 FROM_1 = [SETUP, ('restore', 'latest.pth', 1), ('train_until', 1, 3), SAVE, DOWN]
 FROM_3 = [SETUP, ('restore', 'latest.pth', 3), SAVE, DOWN]
 CRASHED = [SETUP, ('train_until', 0, 3), DOWN]
-RETRAIN = [SETUP, ('restore', 'latest.pth', 3), DOWN, *FULL]
+# train_until at the target trains nothing and hands back the history latest kept
+AT_3 = [SETUP, ('restore', 'latest.pth', 3), ('train_until', 3, 3)]
 # halving run with targets [2, 3], a and b both survive rung 0
 SAVE_1 = ('save', 'rung1.pth.tmp')
 FROM_RUNG0 = [('restore', 'rung0.pth', 2), ('train_until', 2, 3)]
@@ -364,6 +368,7 @@ RUNG1_B = [('setup', 'b', SEED_B), *FROM_RUNG0, SAVE_1, DOWN]
 CLEAN = {
     'configs': [A],
     'halving': None,
+    'epochs': 3,
     'kill_at': None,
     'rung': 0,  # the rung whose commit the row checks
     'fail': set(),
@@ -374,10 +379,10 @@ CLEAN = {
     'first_calls': FULL,
     'first_scores': [1.5],
     'committed': True,
-    'rerun_warn': None,
     'rerun_calls': [],
     'rerun_scores': [1.5],
 }
+# every rerun below scores what the unbroken run does, since latest keeps the partial history
 TRAIN_CRASH = {
     'crash': 1,
     'first_err': 'injected train_until',
@@ -385,7 +390,6 @@ TRAIN_CRASH = {
     'first_scores': [],
     'committed': False,
     'rerun_calls': FROM_1,
-    'rerun_scores': [1.0],  # a resumed segment scores only its own epochs, [1, 2] -> best half [1]
 }
 
 
@@ -427,8 +431,7 @@ def _run_checked(err: str | None, warn: str | None, *args, **kwargs) -> None:
                 'first_calls': CRASHED,
                 'first_scores': [],
                 'committed': False,
-                'rerun_warn': 'has no stored score, retraining from 0',
-                'rerun_calls': RETRAIN,
+                'rerun_calls': [*AT_3, SAVE, DOWN],
             },
             id='kill-after-train-until',
         ),
@@ -443,12 +446,28 @@ def _run_checked(err: str | None, warn: str | None, *args, **kwargs) -> None:
                 'first_calls': [*RUNG0_AB, SETUP, *FROM_RUNG0, DOWN],
                 'first_scores': [1.0],
                 'committed': False,
-                'rerun_warn': 'has no stored score, retraining from 2',
-                'rerun_calls': [SETUP, ('restore', 'latest.pth', 3), DOWN]
-                + [SETUP, *FROM_RUNG0, SAVE_1, DOWN, *RUNG1_B],
+                'rerun_calls': [*AT_3, SAVE_1, DOWN, *RUNG1_B],
                 'rerun_scores': [1.0, 2.0],  # rung 0 scores [3, 1] -> 1, rung 1 scores [2]
             },
             id='kill-after-train-until-rung1',
+        ),
+        pytest.param(
+            {
+                'halving': Halving(rung_epochs=2, survival_fraction=1.0),
+                'epochs': 4,
+                'rung': 1,
+                'crash': 3,
+                'first_err': 'injected train_until',
+                'first_calls': [SETUP, ('train_until', 0, 2), SAVE, DOWN, SETUP]
+                + [('restore', 'rung0.pth', 2), ('train_until', 2, 4), DOWN],
+                'first_scores': [1.0],
+                'committed': False,
+                'rerun_calls': [SETUP, ('restore', 'latest.pth', 3), ('train_until', 3, 4)]
+                + [SAVE_1, DOWN],
+                # rung 1 scores [2, 4] -> 2, epoch 4 alone would give 4
+                'rerun_scores': [1.0, 2.0],
+            },
+            id='train-crash-mid-rung1',
         ),
     ],
 )
@@ -458,11 +477,11 @@ def test_trial_lifecycle_order_and_commit(tmp_path: Path, fake_trial, fake_wandb
     out = tmp_path / 'out'
     run_dir = out / 'a' / 'repeat0'
     score = Score(('loss',), lambda k: 'min', 0.5)
-    kwargs = {'epochs': 3, 'logger': RunLogger('proj'), 'score': score, **RUN}
+    kwargs = {'epochs': c['epochs'], 'logger': RunLogger('proj'), 'score': score, **RUN}
     kwargs['halving'] = c['halving']
     rung_ckpt = run_dir / f'rung{c["rung"]}.pth'
-    # best half of 3 is [1, 2]
-    fake_trial.histories = {n: {'loss': [3.0, 1.0, 2.0]} for n in 'ab'}
+    # best half of the first 3 is [1, 2], epoch 4 is only reached with epochs 4
+    fake_trial.histories = {n: {'loss': [3.0, 1.0, 2.0, 4.0]} for n in 'ab'}
     fake_trial.fail = c['fail']
     fake_trial.kill_at = c['kill_at']
     if c['crash'] is not None:
@@ -484,12 +503,13 @@ def test_trial_lifecycle_order_and_commit(tmp_path: Path, fake_trial, fake_wandb
     fake_trial.fail = set()
     fake_trial.crash = {}
     fake_trial.calls.clear()
-    _run_checked(None, c['rerun_warn'], c['configs'], fake_trial, out, resume=True, **kwargs)
+    # any warning on the rerun fails the row
+    _run_checked(None, None, c['configs'], fake_trial, out, resume=True, **kwargs)
     assert fake_trial.calls == c['rerun_calls']
 
     state = json.loads((out / 'sweep_state.json').read_text())
     assert state['configs']['a']['repeats'][0]['scores'] == c['rerun_scores']
-    assert json.loads(rung_ckpt.read_text())['epoch'] == 3
+    assert json.loads(rung_ckpt.read_text())['epoch'] == c['epochs']
     assert not (run_dir / 'latest.pth').exists()
     assert not list(run_dir.glob('*.tmp'))
     # only each config's first logger run is new, every later one reuses the stored id
