@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sweeper"
+dynamic = ["version"]
+description = "Crash-safe runner for configs x repeats with opt-in successive halving."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.4", "numpy"]
+
+[project.optional-dependencies]
+wandb = ["wandb"]
+
+[project.scripts]
+gpuq = "gpuq:main"
+
+[tool.setuptools]
+py-modules = ["gpuq"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sweeper.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
