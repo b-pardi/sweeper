@@ -20,7 +20,7 @@ A `Trial` is one (config, repeat) training run. `run_sweep` builds a fresh one f
 
 ## The sweep file
 
-The sweep file is JSON. Top-level keys are `version` (must be 1), `epochs`, and `configs`, all required, plus `n_repeats` (default 1), `base_params` (a dict, default `{}`), and `description`. Each entry of `configs` needs `name` and `params` (which may be `{}`) and takes `seeds` (a list of ints, one per repeat), `tags` (a list of strings), and `description`. A key outside these sets raises `ValueError`, as does a missing required key or a wrong version. `params` and `base_params` are opaque to sweeper, so the caller validates them.
+The sweep file is JSON. Top-level keys are `version` (must be 1), `epochs`, and `configs`, all required, plus `n_repeats` (default 1), `base_params` (a dict, default `{}`), and `description`. Each entry of `configs` needs `name` and `params` (which may be `{}`) and takes `seeds` (a list of ints, one per repeat), `tags` (a list of strings), and `description`. A key outside these sets raises `ValueError`, as does a missing required key or a wrong version. `check_sweep(sweep, where)` runs the same checks on a dict already in memory and names `where` in its errors. `params` and `base_params` are opaque to sweeper, so the caller validates them.
 
 ```json
 {

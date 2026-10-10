@@ -1,10 +1,11 @@
 import argparse
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from sweeper.config import explicit_flags, load_sweep, resolve_params
+from sweeper.config import check_sweep, explicit_flags, load_sweep, resolve_params
 
 DEFAULTS = {'lr': 0.1, 'seed': 42}
 
@@ -62,6 +63,8 @@ def _sweep(**over) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
+# key None is the valid case, it returns a filled copy instead of raising
+@pytest.mark.parametrize('via', ['file', 'dict'])
 @pytest.mark.parametrize(
     'sweep, key',
     [
@@ -70,11 +73,25 @@ def _sweep(**over) -> dict:
         (_sweep(_comment='hi'), '_comment'),
         (_sweep(epochs=None), 'epochs'),
         (_sweep(version=2), 'version'),
+        ([1, 2], 'list'),
+        (_sweep(), None),
     ],
 )
-def test_sweep_file_unknown_keys_raise(tmp_path: Path, sweep: dict, key: str) -> None:
-    """Bad key sets and a wrong version raise ValueError that names the offender."""
+def test_sweep_file_unknown_keys_raise(tmp_path: Path, sweep, key: str | None, via: str) -> None:
+    """Bad key sets and a wrong version raise ValueError that names the offender, both ways."""
     path = tmp_path / 'sweep.json'
     path.write_text(json.dumps(sweep), encoding='utf-8')
-    with pytest.raises(ValueError, match=key):
-        load_sweep(path)
+    where = str(path) if via == 'file' else 'repro block'
+
+    def run() -> dict:
+        return load_sweep(path) if via == 'file' else check_sweep(sweep, where)
+
+    if key is None:
+        out = run()
+        assert out['n_repeats'] == 1
+        assert out['base_params'] == {}
+        assert 'n_repeats' not in sweep
+        assert 'base_params' not in sweep
+        return
+    with pytest.raises(ValueError, match=f'^{re.escape(where)}.*{key}'):
+        run()

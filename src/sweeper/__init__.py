@@ -4,7 +4,7 @@ Every finished segment is committed to disk, so a killed sweep resumes where it 
 Successive halving is opt-in.
 """
 
-from sweeper.config import Config, explicit_flags, load_sweep, resolve_params
+from sweeper.config import Config, check_sweep, explicit_flags, load_sweep, resolve_params
 from sweeper.halving import Halving, Score
 from sweeper.runlog import RunLogger
 from sweeper.runner import run_sweep
@@ -29,6 +29,7 @@ __all__ = [
     'Halving',
     # sweep files and params
     'load_sweep',
+    'check_sweep',
     'resolve_params',
     'explicit_flags',
     # logging

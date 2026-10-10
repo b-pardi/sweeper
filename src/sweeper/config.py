@@ -44,23 +44,41 @@ def load_sweep(path: Path) -> dict[str, Any]:
     """
     with open(path, encoding='utf-8') as f:
         sweep = json.load(f)
-    if not isinstance(sweep, dict):
-        raise ValueError(f'{path}: sweep file must hold a JSON object, got {type(sweep).__name__}')
+    return check_sweep(sweep, str(path))
 
-    _check_keys(sweep, _TOP_REQUIRED, _TOP_ALLOWED, f'{path} top level')
+
+def check_sweep(sweep: dict[str, Any], where: str) -> dict[str, Any]:
+    """Run the sweep file checks on a dict that is already in memory.
+
+    Args:
+        sweep: the parsed sweep, left untouched.
+        where: names the source in every error, like a file path or a config block.
+
+    Returns:
+        A deep copy with n_repeats (1) and base_params ({}) filled in when absent.
+
+    Raises:
+        ValueError: on a non-dict, a wrong version, a missing required key, or any key outside
+            the allowed set, at the top level or in a config. Each message starts with where.
+    """
+    if not isinstance(sweep, dict):
+        raise ValueError(f'{where}: sweep must hold a JSON object, got {type(sweep).__name__}')
+
+    _check_keys(sweep, _TOP_REQUIRED, _TOP_ALLOWED, f'{where} top level')
     if sweep['version'] != SWEEP_VERSION:
-        raise ValueError(f'{path}: version must be {SWEEP_VERSION}, got {sweep["version"]!r}')
+        raise ValueError(f'{where}: version must be {SWEEP_VERSION}, got {sweep["version"]!r}')
     if not isinstance(sweep['configs'], list):
-        raise ValueError(f'{path}: configs must be a list, got {type(sweep["configs"]).__name__}')
+        raise ValueError(f'{where}: configs must be a list, got {type(sweep["configs"]).__name__}')
 
     for i, cfg in enumerate(sweep['configs']):
         if not isinstance(cfg, dict):
-            raise ValueError(f'{path}: configs[{i}] must be an object, got {type(cfg).__name__}')
-        _check_keys(cfg, _CONFIG_REQUIRED, _CONFIG_ALLOWED, f'{path} configs[{i}]')
+            raise ValueError(f'{where}: configs[{i}] must be an object, got {type(cfg).__name__}')
+        _check_keys(cfg, _CONFIG_REQUIRED, _CONFIG_ALLOWED, f'{where} configs[{i}]')
 
-    sweep.setdefault('n_repeats', 1)
-    sweep.setdefault('base_params', {})
-    return sweep
+    out = copy.deepcopy(sweep)
+    out.setdefault('n_repeats', 1)
+    out.setdefault('base_params', {})
+    return out
 
 
 def _check_keys(d: dict, required: set[str], allowed: set[str], where: str) -> None:
